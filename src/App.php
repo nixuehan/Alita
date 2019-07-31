@@ -1149,15 +1149,8 @@ SLOGAN;
 class Service
 {
     private $o = [];
-    private static $_instance = null;
 
-    public static function instance()
-    {
-        if(self::$_instance === null){
-            self::$_instance = new static();
-        }
-        return self::$_instance;
-    }
+    use getInstance;
 
     public function get($key)
     {

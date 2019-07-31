@@ -17,6 +17,11 @@
     "require": {
         "open-smf/connection-pool": "~1.0"
     },
+    "autoload": {
+      "psr-4": {
+        "Alita\\": "src"
+      }
+    },
     "autoload-dev": {
       "psr-4": {
         "Tests\\": "tests/"
