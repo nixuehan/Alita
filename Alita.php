@@ -9,8 +9,7 @@ use Swoole\Http\Server;
 final class AUTHOR
 {
     const AUTHOR = '妖';
-    const VERSION = 'Alpha.0.0.1';
-    const CREATION_TIME = '2019.7.31 3:32 PM';
+    const VERSION = 'Alpha.0.0.4';
 }
 
 
