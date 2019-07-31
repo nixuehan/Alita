@@ -1,0 +1,13 @@
+{
+    "name": "nixuehan/alita",
+    "description": "Micro framework for php in swoole",
+    "license": "Apache Licence 2.0",
+    "require": {
+        "open-smf/connection-pool": "~1.0"
+    },
+    "autoload-dev": {
+      "psr-4": {
+        "Tests\\": "tests/"
+      }
+    }
+}
