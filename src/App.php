@@ -9,351 +9,7 @@ use Swoole\Http\Server;
 final class AUTHOR
 {
     const AUTHOR = '妖';
-    const VERSION = 'Alpha.0.0.4';
-}
-
-
-class ORM
-{
-    private $_tableName = '';
-    private $_db = null;
-
-    private $_where = [];
-    private $_raw = '';
-
-    //设置数据源
-    public function setConnect($conn)
-    {
-        $this->_db = $conn;
-        return $this;
-    }
-
-    public function getConnect()
-    {
-        return $this->_db;
-    }
-
-    public function table($tableName) {
-        $this->_tableName = $tableName;
-        return $this;
-    }
-
-    public function getTable() {
-        return $this->_tableName;
-    }
-
-    public function query(string $sql,array $params = []) {
-
-        $conn = static::getConnect();
-        $stmt = $conn->prepare($sql);
-
-        if ($stmt == false) {
-            throw new MysqlException("{$conn->errno} {$conn->error}");
-        }
-
-        if(false == $stmt->execute($params)) {
-            return false;
-        }
-
-        return $stmt;
-    }
-
-    public function insert_id() {
-        return static::getConnect()->insert_id;
-    }
-
-    public function insert(array $data) {
-
-        $fn = function () use($data){
-            $_field = $_value = [];
-
-            foreach($data as $k => $v) {
-                $_field[] = $k;
-                $_sign[] = '?';
-                $_params[] = $v;
-            }
-
-            $field = implode(',',$_field);
-            $_sign = implode(',',$_sign);
-
-            return ["sql" => sprintf("(%s) VALUES (%s)",$field,$_sign),"value" => $_params];
-        };
-
-        $val = $fn->call($this);
-
-        list($sql,$params) = $this->build("INSERT INTO {$this->getTable()} %s",$val);
-
-        $stmt = $this->query($sql,$params);
-
-        if ($stmt === false) { return false; }
-
-        return $this->insert_id();
-    }
-
-    //清除各种ORM临时中间变量
-    private function clean()
-    {
-        $this->clearWhere();
-    }
-
-    private function fetchAll(string $sql,array $params = []) {
-
-        $stmt = $this->query($sql,$params);
-        $this->clean();
-
-        if ($stmt === false) { return false; }
-
-        return $stmt->fetchAll();
-    }
-
-    private function fetch(string $sql,array $params = []) {
-
-        $stmt = $this->query($sql,$params);
-        $this->clean();
-
-        if ($stmt === false) { return false; }
-
-        return $stmt->fetch();
-    }
-
-
-    public function first(array $params = null) {
-
-        $field = is_array($params) ? $this->getField($params) : '*';
-
-        list($sql,$value) = $this->build("SELECT {$field} FROM {$this->getTable()} %s  LIMIT 1",$this->getWhere());
-
-        return $this->fetch($sql,$value);
-    }
-
-    public function where(...$params) {
-
-        $_params = [];
-
-        $this->_where['sql'] = ' WHERE ' . $params[0];
-
-        if(isset($params[1]) && is_array($params[1])) {
-            $_params = $params[1];
-        }
-
-        $this->_where['value'] = $_params;
-
-        return $this;
-    }
-
-    public function and(...$params) {
-
-        $_params = [];
-
-        $this->_where['sql'] .= ' AND ' . $params[0];
-
-        if(isset($params[1]) && is_array($params[1])) {
-            $_params = $params[1];
-        }
-
-        $this->_where['value'] = array_merge($this->_where['value'],$_params);
-
-        return $this;
-    }
-
-    public function or(...$params) {
-        $_params = [];
-
-        $this->_where['sql'] .= ' OR ' . $params[0];
-
-        if(isset($params[1]) && is_array($params[1])) {
-            $_params = $params[1];
-        }
-
-        $this->_where['value'] = array_merge($this->_where['value'],$_params);
-
-        return $this;
-    }
-
-    public function in(string $field,array $values) {
-
-        $val = $_params = [];
-
-        foreach($values as $value) {
-            $val[] = '?';
-            $_params[] = $value;
-        }
-
-        $val = implode(',',$val);
-
-        $this->_where['sql'] = ' WHERE '.$field . " IN (".$val.")";
-
-        $this->_where['value'] = $_params;
-
-        return $this;
-    }
-
-    public function notin(string $field,array $values) {
-
-        $val = $_params = [];
-
-        foreach($values as $value) {
-            $val[] = '?';
-            $_params[] = $value;
-        }
-
-        $val = implode(',',$val);
-
-        $this->_where['sql'] = ' WHERE '.$field . " NOT IN (".$val.")";
-
-        $this->_where['value'] = $_params;
-
-        return $this;
-    }
-
-    private function orderby($val) {
-        if(strpos($val,'ORDER BY') === false) {
-            return ' ORDER BY ';
-        }else{
-            return ',';
-        }
-    }
-
-    public function desc(...$params) {
-
-        $val = implode(',',array_map(function($k){
-            return $k . ' DESC';
-        },$params));
-
-        $this->_where['sql'] .= $this->orderby($this->_where['sql']) . $val;
-        return $this;
-    }
-
-    public function asc(...$params) {
-
-        $val = implode(',',array_map(function($k){
-            return $k . ' ASC';
-        },$params));
-
-        $this->_where['sql'] .= $this->orderby($this->_where['sql']) . $val;
-        return $this;
-    }
-
-    private function getField(array $data) {
-        return implode(',',$data);
-    }
-
-    public function forUpdate() {
-        $this->_where['sql'] .= ' FOR UPDATE';
-        return $this;
-    }
-
-    public function group(...$params) {
-        $this->_where['sql'] .= ' GROUP BY ' . $this->getField($params);
-        return $this;
-    }
-
-    private function getWhere() {
-        return $this->_where ?? $this->_raw;
-    }
-
-    public function limit($start,$end=0) {
-        if($end){
-            $_sql = " LIMIT $start,$end";
-        }else{
-            $_sql = " LIMIT $start";
-        }
-
-        $this->_where['sql'] .= $_sql;
-        return $this;
-    }
-
-    private function noWhere() {
-        if(!$this->_where && !$this->_raw){
-            throw new MysqlAlitaException('sql conditions miss!');
-        }
-    }
-
-    private function clearWhere() {
-        $this->_where = $this->_raw = '';
-    }
-
-    public function delete(bool $force=false) {
-
-        if($force) $this->noWhere();
-
-        list($sql,$value) = $this->build("DELETE FROM {$this->getTable()} %s",$this->getWhere());
-
-        $stmt = $this->query($sql,$value);
-
-        if (false === $stmt) { return false; }
-
-        $this->clean();
-
-        return $stmt;
-    }
-
-    private function getFieldValuePair(array $data) :array {
-        $_pair = $_params = [];
-
-        foreach($data as $k => $v) {
-            $_pair[] = $k . '= ?';
-            $_params[] = $v;
-        }
-
-        return ["sql" => implode(',', $_pair),"value" => $_params];
-    }
-
-    //组装sql和对应?的值
-    private function build($tpl,...$params)
-    {
-        $sqlstr = '';
-        $value = [];
-
-        foreach($params as $param) {
-            $sqlstr .= $param['sql'];
-            $value = array_merge($value,$param['value']);
-        }
-
-        $sql = sprintf($tpl,$sqlstr);
-        return [$sql,$value];
-    }
-
-    public function update(array $params) {
-
-        $this->noWhere($params);
-
-        $pair = $this->getFieldValuePair($params);
-
-        list($sql,$params) = $this->build("UPDATE {$this->getTable()} SET %s",$pair,$this->getWhere());
-
-        $stmt = $this->query($sql,$params);
-
-        if (false === $stmt) { return false; }
-
-        $this->clean();
-
-        return $stmt;
-    }
-
-    public function find($params = null) {
-
-        $field = is_array($params) ? $this->getField($params) : '*';
-
-        list($sql,$value) = $this->build("SELECT {$field} FROM {$this->getTable()} %s",$this->getWhere());
-
-        return $this->fetchAll($sql,$value);
-    }
-
-    public function transaction(callable $fn) {
-
-        $db = static::getConnect();
-
-        $db->begin();
-        $data = $fn();
-
-        if(!$data){
-            $db->rollback();
-            return false;
-        }
-        $db->commit();
-        return $data;
-    }
+    const VERSION = 'Alpha.0.0.7';
 }
 
 class Log
@@ -489,7 +145,7 @@ class RulesRoute implements Route
 
                     array_shift($matches);
 
-                    return ['\Application\Controllers\\' . ucfirst($controller),$action,$matches];
+                    return ['Application\Controllers\\' . ucfirst($controller),$action,$matches];
                 }
             }
         }
@@ -521,7 +177,7 @@ class PathRoute implements Route
             $action = substr($pathInfo,$pos+1);
         }
 
-        return ['\Application\Controllers\\' . ucfirst($controller),$action,[]];
+        return ['Application\Controllers\\' . ucfirst($controller),$action,[]];
     }
 }
 
@@ -903,7 +559,7 @@ class App
         ]);
 
         //初始化
-        ($this->_startInitialize)();
+        if ($this->_startInitialize) { ($this->_startInitialize)(); }
 
         $http = new Server(Setting::get('server.host'), Setting::get('server.port'));
 
@@ -1178,14 +834,18 @@ class Request
         $this->request = $request;
     }
 
-    public function input(string $key='')
+    public function input(string $key='',$default=null)
     {
         $_get = $this->request->get ?? [];
         $_post = $this->request->post ?? [];
 
         $request = array_merge($_get,$_post);
 
-        return $key ? $request[$key] : $request;
+        if (!$key) {
+            return $request;
+        }
+
+        return isset($request[$key]) ? $request[$key] : $default;
     }
 
     public function server(string $key='')
@@ -1256,17 +916,16 @@ EOD;
         return $this->response->end($msg."\n");
     }
 
-    public function redirect($url)
+    public function redirect($url,$code=302)
     {
-        $this->response->header("Location", $url);
-        $this->response->status(302);
+        $this->response->redirect($url,$code);
         throw new WorkerException();
     }
 
     //中断
-    public function abort()
+    public function abort(string $msg = '')
     {
-        $this->end();
+        $this->end($msg);
         throw new WorkerException();
     }
 
@@ -1351,11 +1010,356 @@ class BaseModel
 
     protected function initialize()
     {
-        $this->db = Service::orm()->setConnect(Service::mysql());
+        if (Setting::$app_mysql) {
+            $this->db = Service::orm()->setConnect(Service::mysql());
+        }
     }
 
     protected function db()
     {
         return $this->db;
+    }
+}
+
+class ORM
+{
+    private $_tableName = '';
+    private $_db = null;
+
+    private $_where = [];
+    private $_raw = '';
+
+    //设置数据源
+    public function setConnect($conn)
+    {
+        $this->_db = $conn;
+        return $this;
+    }
+
+    public function getConnect()
+    {
+        return $this->_db;
+    }
+
+    public function table($tableName) {
+        $this->_tableName = $tableName;
+        return $this;
+    }
+
+    public function getTable() {
+        return $this->_tableName;
+    }
+
+    public function query(string $sql,array $params = []) {
+
+        $conn = static::getConnect();
+        $stmt = $conn->prepare($sql);
+
+        if ($stmt == false) {
+            throw new MysqlException("{$conn->errno} {$conn->error}");
+        }
+
+        if(false == $stmt->execute($params)) {
+            return false;
+        }
+
+        return $stmt;
+    }
+
+    public function insert_id() {
+        return static::getConnect()->insert_id;
+    }
+
+    public function insert(array $data) {
+
+        $fn = function () use($data){
+            $_field = $_value = [];
+
+            foreach($data as $k => $v) {
+                $_field[] = $k;
+                $_sign[] = '?';
+                $_params[] = $v;
+            }
+
+            $field = implode(',',$_field);
+            $_sign = implode(',',$_sign);
+
+            return ["sql" => sprintf("(%s) VALUES (%s)",$field,$_sign),"value" => $_params];
+        };
+
+        $val = $fn->call($this);
+
+        list($sql,$params) = $this->build("INSERT INTO {$this->getTable()} %s",$val);
+
+        $stmt = $this->query($sql,$params);
+
+        if ($stmt === false) { return false; }
+
+        return $this->insert_id();
+    }
+
+    //清除各种ORM临时中间变量
+    private function clean()
+    {
+        $this->clearWhere();
+    }
+
+    private function fetchAll(string $sql,array $params = []) {
+
+        $stmt = $this->query($sql,$params);
+        $this->clean();
+
+        if ($stmt === false) { return false; }
+
+        return $stmt->fetchAll();
+    }
+
+    private function fetch(string $sql,array $params = []) {
+
+        $stmt = $this->query($sql,$params);
+        $this->clean();
+
+        if ($stmt === false) { return false; }
+
+        return $stmt->fetch();
+    }
+
+
+    public function first(array $params = null) {
+
+        $field = is_array($params) ? $this->getField($params) : '*';
+
+        list($sql,$value) = $this->build("SELECT {$field} FROM {$this->getTable()} %s  LIMIT 1",$this->getWhere());
+
+        return $this->fetch($sql,$value);
+    }
+
+    public function where(...$params) {
+
+        $_params = [];
+
+        $this->_where['sql'] = ' WHERE ' . $params[0];
+
+        if(isset($params[1]) && is_array($params[1])) {
+            $_params = $params[1];
+        }
+
+        $this->_where['value'] = $_params;
+
+        return $this;
+    }
+
+    public function and(...$params) {
+
+        $_params = [];
+
+        $this->_where['sql'] .= ' AND ' . $params[0];
+
+        if(isset($params[1]) && is_array($params[1])) {
+            $_params = $params[1];
+        }
+
+        $this->_where['value'] = array_merge($this->_where['value'],$_params);
+
+        return $this;
+    }
+
+    public function or(...$params) {
+        $_params = [];
+
+        $this->_where['sql'] .= ' OR ' . $params[0];
+
+        if(isset($params[1]) && is_array($params[1])) {
+            $_params = $params[1];
+        }
+
+        $this->_where['value'] = array_merge($this->_where['value'],$_params);
+
+        return $this;
+    }
+
+    public function in(string $field,array $values) {
+
+        $val = $_params = [];
+
+        foreach($values as $value) {
+            $val[] = '?';
+            $_params[] = $value;
+        }
+
+        $val = implode(',',$val);
+
+        $this->_where['sql'] = ' WHERE '.$field . " IN (".$val.")";
+
+        $this->_where['value'] = $_params;
+
+        return $this;
+    }
+
+    public function notin(string $field,array $values) {
+
+        $val = $_params = [];
+
+        foreach($values as $value) {
+            $val[] = '?';
+            $_params[] = $value;
+        }
+
+        $val = implode(',',$val);
+
+        $this->_where['sql'] = ' WHERE '.$field . " NOT IN (".$val.")";
+
+        $this->_where['value'] = $_params;
+
+        return $this;
+    }
+
+    private function orderby($val) {
+        if(strpos($val,'ORDER BY') === false) {
+            return ' ORDER BY ';
+        }else{
+            return ',';
+        }
+    }
+
+    public function desc(...$params) {
+
+        $val = implode(',',array_map(function($k){
+            return $k . ' DESC';
+        },$params));
+
+        $this->_where['sql'] .= $this->orderby($this->_where['sql']) . $val;
+        return $this;
+    }
+
+    public function asc(...$params) {
+
+        $val = implode(',',array_map(function($k){
+            return $k . ' ASC';
+        },$params));
+
+        $this->_where['sql'] .= $this->orderby($this->_where['sql']) . $val;
+        return $this;
+    }
+
+    private function getField(array $data) {
+        return implode(',',$data);
+    }
+
+    public function forUpdate() {
+        $this->_where['sql'] .= ' FOR UPDATE';
+        return $this;
+    }
+
+    public function group(...$params) {
+        $this->_where['sql'] .= ' GROUP BY ' . $this->getField($params);
+        return $this;
+    }
+
+    private function getWhere() {
+        return $this->_where ?? $this->_raw;
+    }
+
+    public function limit($start,$end=0) {
+        if($end){
+            $_sql = " LIMIT $start,$end";
+        }else{
+            $_sql = " LIMIT $start";
+        }
+
+        $this->_where['sql'] .= $_sql;
+        return $this;
+    }
+
+    private function noWhere() {
+        if(!$this->_where && !$this->_raw){
+            throw new MysqlAlitaException('sql conditions miss!');
+        }
+    }
+
+    private function clearWhere() {
+        $this->_where = $this->_raw = '';
+    }
+
+    public function delete(bool $force=false) {
+
+        if($force) $this->noWhere();
+
+        list($sql,$value) = $this->build("DELETE FROM {$this->getTable()} %s",$this->getWhere());
+
+        $stmt = $this->query($sql,$value);
+
+        if (false === $stmt) { return false; }
+
+        $this->clean();
+
+        return $stmt;
+    }
+
+    private function getFieldValuePair(array $data) :array {
+        $_pair = $_params = [];
+
+        foreach($data as $k => $v) {
+            $_pair[] = $k . '= ?';
+            $_params[] = $v;
+        }
+
+        return ["sql" => implode(',', $_pair),"value" => $_params];
+    }
+
+    //组装sql和对应?的值
+    private function build($tpl,...$params)
+    {
+        $sqlstr = '';
+        $value = [];
+
+        foreach($params as $param) {
+            $sqlstr .= $param['sql'];
+            $value = array_merge($value,$param['value']);
+        }
+
+        $sql = sprintf($tpl,$sqlstr);
+        return [$sql,$value];
+    }
+
+    public function update(array $params) {
+
+        $this->noWhere($params);
+
+        $pair = $this->getFieldValuePair($params);
+
+        list($sql,$params) = $this->build("UPDATE {$this->getTable()} SET %s",$pair,$this->getWhere());
+
+        $stmt = $this->query($sql,$params);
+
+        if (false === $stmt) { return false; }
+
+        $this->clean();
+
+        return $stmt;
+    }
+
+    public function find($params = null) {
+
+        $field = is_array($params) ? $this->getField($params) : '*';
+
+        list($sql,$value) = $this->build("SELECT {$field} FROM {$this->getTable()} %s",$this->getWhere());
+
+        return $this->fetchAll($sql,$value);
+    }
+
+    public function transaction(callable $fn) {
+
+        $db = static::getConnect();
+
+        $db->begin();
+        $data = $fn();
+
+        if(!$data){
+            $db->rollback();
+            return false;
+        }
+        $db->commit();
+        return $data;
     }
 }
