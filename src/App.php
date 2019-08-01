@@ -360,7 +360,6 @@ class Log
 {
     public static function print(array $message)
     {
-
         $message = implode('    ',$message);
 
         go(function () use($message){
@@ -470,8 +469,6 @@ class RulesRoute implements Route
     public function getControllerActionParams(string $pathInfo) :array
     {
 
-        var_dump($pathInfo);
-
         foreach ($this->rules as $rule => $do) {
 
             if(is_callable($do)) {
@@ -537,10 +534,8 @@ class ConnPool
         return function() use($mysqlSetting){
             // All MySQL connections: [4 workers * 2 = 8, 4 workers * 10 = 40]
             $pool1 = new ConnectionPool(
-                [
-                    'minActive' => 2,
-                    'maxActive' => 100,
-                ],
+                Setting::get('pool')
+                ,
                 new CoroutineMySQLConnector,$mysqlSetting);
             $pool1->init();
 
@@ -556,11 +551,8 @@ class ConnPool
 
             // All Redis connections: [4 workers * 5 = 20, 4 workers * 20 = 80]
             $pool2 = new ConnectionPool(
-                [
-                    'minActive' => 5,
-                    'maxActive' => 20,
-                ],
-
+                Setting::get('pool')
+                ,
                 new PhpRedisConnector,$redisSetting);
             $pool2->init();
             $this->addConnectionPool('redis', $pool2);
@@ -608,7 +600,7 @@ class Events
                     throw new RuntimeException("{$event} handle method Not Found");
                 }
 
-                //返回所有事件处理的结果
+                //收集结果
                 $result[] = $obj->handle($params);
             }
         }
@@ -718,7 +710,6 @@ class App
 
     public function __construct(array $project = [])
     {
-
         Setting::server($project);
 
         $this->setProvider([
@@ -726,7 +717,6 @@ class App
         ]);
 
     }
-
 
     public function startInitialize(callable $fn)
     {
@@ -982,6 +972,27 @@ class App
         return $this->getConnectionPool($type);
     }
 
+    private $_before_fn = null;
+    private $_after_fn = null;
+
+    public function before(\Closure $fn) {
+        $this->_before_fn = $fn;
+    }
+
+    public function after(\Closure $fn)
+    {
+        $this->_after_fn = $fn;
+    }
+
+
+    private $_consoles = null;
+
+    public function getConsole(int $argc , array $argv)
+    {
+        $this->_consoles = new Consoles($argc,$argv);
+        return $this;
+    }
+
     private function dispatch()
     {
         $_dispatch = function(\Alita\Request $request,\Alita\Response $response)
@@ -1008,6 +1019,8 @@ class App
                     $redis = $redisConn->borrow();
                     $service->set('redis', $redis);
                 }
+
+                if (!empty($this->_before_fn)) { ($this->_before_fn)($request,$response); }
 
                 //硬路由
                 if (!empty($this->_coreRULEs)) {
@@ -1082,6 +1095,8 @@ class App
                     $params
                 );
 
+                if (!empty($this->_after_fn)) { ($this->_after_fn)($request,$response); }
+
                 if (empty($content)) {
                     $content = '';
                 }
@@ -1106,10 +1121,15 @@ class App
         return function (\Swoole\Http\Request $request,\Swoole\Http\Response $response) use($_dispatch)
         {
             //http请求开始
+            $_startTime = microtime(true);
+
+
             $service = Service::instance();
 
             $_request = new Request($request);
             $_response = new Response($response,$request);
+
+            $_response->startTime =  $_startTime;
 
             $service->set('Request',$_request);
             $service->set('Response',$_response);
@@ -1142,30 +1162,32 @@ class App
     private function slogan($version)
     {
         print <<<SLOGAN
+        \e[38;5;4;1m
+     _    _ _ _        
+    / \  | (_) |_ __ _ 
+   / _ \ | | | __/ _` |
+  / ___ \| | | || (_| |
+ /_/   \_\_|_|\__\__,_| 
 
-   .--,       .--,
-  ( (  \.---./  ) )
-   '.__/o   o\__.'
-      {=  ^  =}
-       >  -  <
-      /       \
-     //       \\
-    //|   .   |\\
-    "'\       /'"_.-~^`'-.
-       \  _  /--'         `
-     ___)( )(___
-    (((__) (__)))    山穷水尽疑无路 柳暗花明又一村
+Alita Server {$version} Started :\e[0m
 
-Alita Server {$version} Started ....
 
 SLOGAN;
     }
 
     public function Run()
     {
-        $this->slogan(AUTHOR::VERSION);
 
-        $this->engine($this->dispatch());
+        if ($this->_consoles === null) {
+
+            $this->slogan(AUTHOR::VERSION);
+            $this->engine($this->dispatch());
+
+        }else{
+            go(function () {
+                $this->_consoles->Run();
+            });
+        }
     }
 }
 
@@ -1252,6 +1274,8 @@ class Response
 
     private $response = null;
 
+    public $startTime = 0; //启动时间
+
     public function __construct(\Swoole\Http\Response $response,\Swoole\Http\Request $request)
     {
         $this->response = $response;
@@ -1271,14 +1295,15 @@ EOD;
 
     private function write($httpCode = 200,$msg)
     {
-
         Log::print([
             'protocol' => $this->request->server['server_protocol'],
             'client_ip' => $this->request->server['remote_addr'],
             'method' => $this->request->server['request_method'],
-            'code' => $httpCode,
+            'code' => $httpCode != 200 ? "\e[38;5;1m{$httpCode}\e[0m" : $httpCode,
             'path' => $this->request->server['path_info'],
             'user_agent' => $this->request->header['user-agent'],
+            'execution_time' => round(microtime(true) - $this->startTime,3) . ' second',
+            'memory_usage' => round(memory_get_usage() / 1024,3) . ' kb',
         ]);
 
         $this->response->status($httpCode);
@@ -1387,5 +1412,130 @@ class BaseModel
     protected function db()
     {
         return $this->db;
+    }
+}
+
+interface Console
+{
+    public function initialize(...$params);
+    public function handle();
+};
+
+class Consoles
+{
+
+    private $_type = '';
+    private $_do = '';
+    private $_params = [];
+
+    public function __construct($argc,$argv)
+    {
+        //[type:do][params array]
+        list($this->_type,$this->_do) = explode(':',$argv[1]);
+        $this->_params = array_slice($argv,2);
+
+    }
+
+    private $_redisPool = null;
+    private function redisPool()
+    {
+
+        //Setting::get('server')
+
+        $pool = new ConnectionPool(
+            Setting::get('pool')
+            ,
+
+            new PhpRedisConnector,Setting::get('redis'));
+        $pool->init();
+
+        $this->_redisPool = $pool;
+
+        $connection = $this->_redisPool->borrow();
+
+        $service = Service::instance();
+
+        //模型需要
+        $service->set('redis', $connection);
+
+        defer(function () {
+            $this->_redisPool->close();
+        });
+    }
+
+    //连接池
+
+    private $_mysqlPool = null;
+
+    private function mysqlPool()
+    {
+        $pool = new ConnectionPool(
+            Setting::get('pool')
+            ,
+            new CoroutineMySQLConnector,Setting::get('mysql')
+        );
+
+        $pool->init();
+
+        $this->_mysqlPool = $pool;
+
+        $connection = $this->_mysqlPool->borrow();
+
+        $service = Service::instance();
+
+        //模型需要
+        $service->set('mysql', $connection);
+        $service->set('orm', new ORM());
+
+        defer(function () {
+            $this->_mysqlPool->close();
+        });
+
+    }
+
+    //任务
+    private function service($do,...$params)
+    {
+        $do = "Application\Consoles\\" . ucfirst($do);
+
+        $service = new $do;
+        $service->initialize($params);
+        $service->handle();
+
+
+        $service = Service::instance();
+
+        if (Setting::$app_mysql) {
+            $this->_mysqlPool->return($service->get('mysql'));
+        }
+
+        if (Setting::$app_redis) {
+            $this->_redisPool->return($service->get('redis'));
+        }
+
+    }
+
+    public function Run()
+    {
+        //初始化连接池
+        if (Setting::$app_mysql) {
+            $this->mysqlPool();
+        }
+
+        if (Setting::$app_redis) {
+            $this->redisPool();
+        }
+
+        try {
+            switch ($this->_type)
+            {
+                case "service": $this->service($this->_do,$this->_params);
+            }
+        }
+        catch (\Throwable $e)
+        {
+            //todo 完善输出
+            print $e;
+        }
     }
 }

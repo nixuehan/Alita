@@ -1,4 +1,7 @@
 <?php
+use \Alita\Request;
+use \Alita\Response;
+
 require (__DIR__ . "/vendor/autoload.php");
 
 $app = new Alita\App([
@@ -7,7 +10,7 @@ $app = new Alita\App([
 
 //定义中间件
 $app->middleware([
-    "log" => function(\Alita\Request $request,\Alita\Response $response) {
+    "log" => function(Request $request,Response $response) {
         $request->set("token",sha1(time()));
     },
 
@@ -34,6 +37,13 @@ $app->process([
 
 $app->setting(function () {
     return [
+        'pool' => [
+            'minActive'         => 10,
+            'maxActive'         => 30,
+            'maxWaitTime'       => 5,
+            'maxIdleTime'       => 20,
+            'idleCheckInterval' => 10,
+        ],
         'mysql' => [
             'host'        => 'mysql',
             'port'        => '3306',
@@ -54,6 +64,14 @@ $app->events(function () {
             \Application\Events\Payment::class,
         ]
     ];
+});
+
+$app->before(function (Request $request,Response $response) {
+//   $response->abort("中断你jj");
+});
+
+$app->after(function (Request $request,Response $response) {
+
 });
 
 $app->Run();

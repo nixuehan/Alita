@@ -14,9 +14,7 @@ class Home extends BaseModel
     public function getPlayer()
     {
         return $this->db->table('player')
-            ->where('player_id = ?',[6])
-            ->and('gender = ?',[1])
-            ->or('player_id = ?',[2])
+            ->where('player_id = ?',[8])
             ->find();
     }
 }
