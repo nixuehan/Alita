@@ -669,6 +669,85 @@ class Home extends BaseController
 Events->emit('事件名',[参数])   * 事件名我们已经在 main.php 里定义
 
 
+# http周期 开始和结束hook
+
+```
+$app->before(function (Request $request,Response $response) {
+   $response->abort("http开始");
+});
+
+$app->after(function (Request $request,Response $response) {
+    $response->abort("http结束");
+});
+```
+
+# console 使用
+
+新建个文件 console.php
+
+```
+<?php
+require (__DIR__ . "/vendor/autoload.php");
+
+$console = (new \Alita\App())->getConsole($argc,$argv);
+
+$console->setting(function () {
+    return [
+        'mysql' => [
+            'host'        => 'mysql',
+            'port'        => '3306',
+            'user'        => 'root',
+            'password'    => '1',
+            'database'    => 'wanda',
+            'timeout'     => 10,
+            'charset'     => 'utf8mb4',
+            'strict_type' => true,
+            'fetch_mode'  => true,
+        ],
+        'redis' => [
+            'host'     => 'redis',
+            'port'     => '6379',
+            'database' => 0,
+            'password' => null,
+        ],
+    ];
+});
+
+$console->run();
+```
+
+然后在Application 目录里 新建一个目录 Consoles 在建一个文件  Email.php
+
+```
+<?php
+namespace Application\Consoles;
+
+use Alita\Console;
+use Application\Models\Home;
+
+class Email implements Console
+{
+    public function initialize(...$params)
+    {
+
+    }
+
+    //批量发送邮件
+    public function handle()
+    {
+        $home = new Home();
+        print_r($home->getPlayer());
+    }
+}
+```
+
+脚本调用这个文件
+
+```
+php console.php service:Email ss 333
+```
+
+
+
 //TODO
-命令行
 批量测试脚本
