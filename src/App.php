@@ -556,7 +556,7 @@ class ConnPool
         return function() use($mysqlSetting){
             // All MySQL connections: [4 workers * 2 = 8, 4 workers * 10 = 40]
             $pool1 = new ConnectionPool(
-                Setting::get('pool')
+                Setting::get('mysql.pool')
                 ,
                 new CoroutineMySQLConnector,$mysqlSetting);
             $pool1->init();
@@ -573,7 +573,7 @@ class ConnPool
 
             // All Redis connections: [4 workers * 5 = 20, 4 workers * 20 = 80]
             $pool2 = new ConnectionPool(
-                Setting::get('pool')
+                Setting::get('redis.pool')
                 ,
                 new PhpRedisConnector,$redisSetting);
             $pool2->init();
@@ -628,6 +628,55 @@ class Events
         }
 
         return $result;
+    }
+}
+
+//
+class Config
+{
+    private $_conf = [];
+
+    public function load(string $configPath)
+    {
+        $confArr = include($configPath);
+        if($confArr) {
+            $this->_conf = array_merge($this->_conf,$confArr);
+        }
+    }
+
+    public function exists(string $key) :bool
+    {
+        $values = explode('.',$key);
+        $sizeof = sizeof($values);
+
+        $element = $this->_conf;
+
+        for($i=0;$i<$sizeof;$i++) {
+            if (!isset($element[$values[$i]])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public function get(string $key = '')
+    {
+        if (empty($key)) {
+            return $this->_conf;
+        }
+
+        $values = explode('.',$key);
+        $sizeof = sizeof($values);
+
+        $element = $this->_conf;
+
+        for($i=0;$i<$sizeof;$i++) {
+            if (!isset($element[$values[$i]])) {
+                return '';
+            }
+            $element = $element[$values[$i]];
+        }
+        return $element;
     }
 }
 
@@ -708,22 +757,19 @@ class Setting
     //获取配置选项
     public static function get(string $key = '')
     {
-
         if (empty($key)) {
             return self::$SETTING;
         }
 
         $values = explode('.',$key);
+        $sizeof = sizeof($values);
 
-        switch (sizeof($values))
-        {
-            case 1:
-                return self::$SETTING[$values[0]];
-                break;
-            case 2:
-                return self::$SETTING[$values[0]][$values[1]];
-                break;
+        $element = self::$SETTING;
+
+        for($i=0;$i<$sizeof;$i++) {
+            $element = $element[$values[$i]];
         }
+        return $element;
     }
 }
 
@@ -763,6 +809,7 @@ class App
     public function prod(bool $mode)
     {
         $this->_prod = $mode;
+        Runtime::$Mode = $this->getMode($mode);
     }
 
     public function getMode() :string
@@ -770,22 +817,16 @@ class App
         return $this->_prod ? 'prod' : 'dev';
     }
 
-    private $_settingFN = [];
-    public function setting(\Closure $fn)
-    {
-        $this->_settingFN = $fn;
-    }
-
-    private $_mysqlConfigFN = [];
+    private $_mysqlConfig_fn = [];
     public function mysql(\Closure $fn)
     {
-        $this->_mysqlConfigFN = $fn;
+        $this->_mysqlConfig_fn = $fn;
     }
 
-    private $_redisConfigFN = [];
+    private $_redisConfig_fn = [];
     public function redis(\Closure $fn)
     {
-        $this->_redisConfigFN = $fn;
+        $this->_redisConfig_fn = $fn;
     }
 
     public $_coreRULEs = []; //路由
@@ -975,15 +1016,33 @@ class App
             ($this->_startInitialize)();
         }
 
+        //配置类
+        $config = new Config();
+        $service->set('Config',$config);
+        //加载默认APP配置
+        $config->load(Setting::$ROOT_DIR . "/Application/Config/App.".$this->getMode().".php");
+
         //注册全局对象
         foreach($this->_service as $k => $v) {
             $service->set($k,$v());
         }
 
-        //加载配置
-        Setting::app(($this->_settingFN)());
-        Setting::mysql(['mysql' => ($this->_mysqlConfigFN)()]);
-        Setting::redis(['redis' => ($this->_redisConfigFN)()]);
+        if (is_callable($this->_mysqlConfig_fn)) {
+            Setting::mysql(['mysql' => ($this->_mysqlConfig_fn)()]);
+        }
+
+        if (is_callable($this->_redisConfig_fn)) {
+            Setting::redis(['redis' => ($this->_redisConfig_fn)()]);
+        }
+
+        //如果有默认配置就覆盖 启动文件的配置
+        if ($config->exists('mysql')) {
+            Setting::mysql(['mysql' => $config->get('mysql')]);
+        }
+
+        if ($config->exists('redis')) {
+            Setting::redis(['redis' => $config->get('redis')]);
+        }
 
         $http = new Server(Setting::get('server.host'), Setting::get('server.port'));
 
@@ -1687,7 +1746,7 @@ class Consoles
     private function redisPool()
     {
         $pool = new ConnectionPool(
-            Setting::get('pool')
+            Setting::get('redis.pool')
             ,
 
             new PhpRedisConnector,Setting::get('redis'));
@@ -1708,13 +1767,12 @@ class Consoles
     }
 
     //连接池
-
     private $_mysqlPool = null;
 
     private function mysqlPool()
     {
         $pool = new ConnectionPool(
-            Setting::get('pool')
+            Setting::get('mysql.pool')
             ,
             new CoroutineMySQLConnector,Setting::get('mysql')
         );
@@ -1737,9 +1795,41 @@ class Consoles
 
     }
 
-    //任务
-    private function service($do,...$params)
+    private function recurseCopy($src,$dst)
     {
+        $dir = opendir($src);
+//        @mkdir($dst);
+        while(false !== ( $file = readdir($dir)) ) {
+            if (( $file != '.' ) && ( $file != '..' )) {
+                if ( is_dir($src . '/' . $file) ) {
+                    $this->recurseCopy($src . '/' . $file,$dst . '/' . $file);
+                } else {
+                    if (file_exists($dst . '/' . $file)) {
+                        rename($dst . '/' . $file,$dst . '/old.' . $file);
+                    }
+
+                    copy($src . '/' . $file,$dst . '/' . $file);
+                }
+            }
+        }
+        closedir($dir);
+    }
+
+    //任务
+    private function service($do,...$params) :void
+    {
+        //初始化项目骨架
+        if ($do == 'init') {
+            if (file_exists(Runtime::$ROOT_PATH . '/.alita.lock')) {
+                $lock = Runtime::$ROOT_PATH . '/.alita.lock';
+                $mesg = "Warning : Delete the {$lock} if you are sure you want to rebuild the project.";
+                print "\e[38;5;1m{$mesg}\e[0m\n";
+                return;
+            }
+            $this->recurseCopy(Runtime::vendorPath() . '/nixuehan/alita/alita',Runtime::$ROOT_PATH);
+            return;
+        }
+
         $do = "Application\Consoles\\" . ucfirst($do);
 
         $service = new $do;
@@ -1789,4 +1879,13 @@ class Runtime
 {
     //项目根路径
     public static $ROOT_PATH = '';
+    //当前运行模式
+    public static $Mode = '';
+
+    //获取vendor路径
+    public static function vendorPath()
+    {
+        $reflection = new \ReflectionClass(\Composer\Autoload\ClassLoader::class);
+        return  dirname(dirname($reflection->getFileName()));
+    }
 }
