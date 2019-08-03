@@ -9,7 +9,7 @@ use Swoole\Http\Server;
 final class AUTHOR
 {
     const AUTHOR = '妖';
-    const VERSION = 'Alpha.0.0.4';
+    const VERSION = 'Alpha.0.1.2';
 }
 
 
@@ -33,6 +33,12 @@ class ORM
         return $this->_db;
     }
 
+    //返回原始db,用法参照 swoole 异步mysql
+    public function raw()
+    {
+        return $this->_db;
+    }
+
     public function table($tableName) {
         $this->_tableName = $tableName;
         return $this;
@@ -48,7 +54,7 @@ class ORM
         $stmt = $conn->prepare($sql);
 
         if ($stmt == false) {
-            throw new MysqlException("{$conn->errno} {$conn->error}");
+            throw new MysqlException("errno : {$conn->errno} {error : $conn->error}");
         }
 
         if(false == $stmt->execute($params)) {
@@ -87,6 +93,8 @@ class ORM
 
         if ($stmt === false) { return false; }
 
+        $this->clean();
+
         return $this->insert_id();
     }
 
@@ -116,6 +124,20 @@ class ORM
         return $stmt->fetch();
     }
 
+    // left join
+    public function leftJoin(string $src,string $target,string $condition)
+    {
+        //select %s from %s as a  left join bb as b on xx.%s = bb.%s where %s
+        //[]
+
+        // $this->db()
+        //->leftJoin('aa as a','bb as b','a.id = b.cid')
+        //->where()
+        //->first()
+
+        $this->_tableName = sprintf("%s  left join %s ON %s",$src,$target,$condition);
+        return $this;
+    }
 
     public function first(array $params = null) {
 
@@ -299,7 +321,7 @@ class ORM
         return ["sql" => implode(',', $_pair),"value" => $_params];
     }
 
-    //组装sql和对应?的值
+    //组装sql和对应?的值,每一个sql片段都带着对应的值
     private function build($tpl,...$params)
     {
         $sqlstr = '';
@@ -621,7 +643,14 @@ class Setting
     //服务器配置
     public static function server(array $project = [])
     {
+
+        if (!isset($project['project_root'])) {
+            print("project root path is not set\n");
+            exit;
+        }
+
         self::$ROOT_DIR = $project['project_root'];
+        Runtime::$ROOT_PATH = $project['project_root'];
 
         if (isset($project['server'])) {
             self::$SETTING = $project;
@@ -651,19 +680,26 @@ class Setting
         ];
     }
 
+    public static function mysql(array $conf)
+    {
+        if (isset($conf['mysql']) && !empty($conf['mysql'])) {
+            self::$app_mysql = true;
+        }
+        self::$SETTING = array_merge(self::$SETTING,$conf);
+    }
+
+    public static function redis(array $conf)
+    {
+        if (isset($conf['redis']) && !empty($conf['redis'])) {
+            self::$app_redis = true;
+        }
+        self::$SETTING = array_merge(self::$SETTING,$conf);
+    }
+
     //应用的配置
     public static function app($conf)
     {
         if (!empty($conf))  {
-
-            if (isset($conf['mysql']) && !empty($conf['mysql'])) {
-                self::$app_mysql = true;
-            }
-
-            if (isset($conf['redis']) && !empty($conf['redis'])) {
-                self::$app_redis = true;
-            }
-
             self::$SETTING = array_merge(self::$SETTING,$conf);
         }
 
@@ -718,7 +754,7 @@ class App
 
     }
 
-    public function startInitialize(callable $fn)
+    public function startInitialize(\Closure $fn)
     {
         $this->_startInitialize = $fn;
     }
@@ -734,9 +770,22 @@ class App
         return $this->_prod ? 'prod' : 'dev';
     }
 
-    public function setting(callable $fn)
+    private $_settingFN = [];
+    public function setting(\Closure $fn)
     {
-        Setting::app($fn());
+        $this->_settingFN = $fn;
+    }
+
+    private $_mysqlConfigFN = [];
+    public function mysql(\Closure $fn)
+    {
+        $this->_mysqlConfigFN = $fn;
+    }
+
+    private $_redisConfigFN = [];
+    public function redis(\Closure $fn)
+    {
+        $this->_redisConfigFN = $fn;
     }
 
     public $_coreRULEs = []; //路由
@@ -823,6 +872,7 @@ class App
     public function middleware(array $middleware)
     {
         $this->_middleware = $middleware;
+        return $this;
     }
 
     private function getMiddleware(string $key = '')
@@ -917,8 +967,23 @@ class App
             RulesRoute::class => new RulesRoute($this->_coreRULEs),
         ]);
 
+
+        $service = Service::instance();
+
         //初始化
-        if ($this->_startInitialize) { ($this->_startInitialize)(); }
+        if ($this->_startInitialize) {
+            ($this->_startInitialize)();
+        }
+
+        //注册全局对象
+        foreach($this->_service as $k => $v) {
+            $service->set($k,$v());
+        }
+
+        //加载配置
+        Setting::app(($this->_settingFN)());
+        Setting::mysql(['mysql' => ($this->_mysqlConfigFN)()]);
+        Setting::redis(['redis' => ($this->_redisConfigFN)()]);
 
         $http = new Server(Setting::get('server.host'), Setting::get('server.port'));
 
@@ -1006,6 +1071,9 @@ class App
 
             try {
 
+                //            //系统级中间件
+                $this->middlewareProcess('system',$request,$response);
+
                 //获取连接池
                 if (Setting::$app_mysql) {
                     $mysqlConn = $this->getConnPool('mysql');
@@ -1049,10 +1117,6 @@ class App
 
                 list($controller,$action,$params) = $Router->getControllerActionParams($pathInfo);
 
-                //路由级中间件
-                if($Router->isMatch) {
-                    $this->middlewareProcess('route',$request,$response,$Router);
-                }
 
                 //找不到路由匹配
                 if (!$Router->isMatch) {
@@ -1088,6 +1152,9 @@ class App
                     ]);
                 }
 
+                //路由级中间件
+                $this->middlewareProcess('route',$request,$response,$Router);
+
                 $content = call_user_func_array([
                     $controllerObj,
                     $action
@@ -1096,10 +1163,6 @@ class App
                 );
 
                 if (!empty($this->_after_fn)) { ($this->_after_fn)($request,$response); }
-
-                if (empty($content)) {
-                    $content = '';
-                }
 
                 if (Setting::$app_mysql) {
                     $mysqlConn->return($mysql);
@@ -1134,12 +1197,6 @@ class App
             $service->set('Request',$_request);
             $service->set('Response',$_response);
 
-
-            //注册全局对象
-            foreach($this->_service as $k => $v) {
-                $service->set($k,$v());
-            }
-
             //注册全局中间件
             //中间件 兼容函数和对象
             foreach($this->_middleware as $name => &$handle) {
@@ -1150,9 +1207,6 @@ class App
                     };
                 }
             }
-
-//            //系统级中间件
-            $this->middlewareProcess('system',$_request,$_response);
 
             $_response->end($_dispatch($_request,$_response));
 
@@ -1219,29 +1273,202 @@ class Request
 {
     private $container = [];
     private $request = null;
+    private $input = [];
 
     public function __construct(\Swoole\Http\Request $request)
     {
         $this->request = $request;
     }
 
-    public function input(string $key='',$default=null)
+    private function mergeGP()
     {
-        $_get = $this->request->get ?? [];
-        $_post = $this->request->post ?? [];
+        if (empty($this->input)) {
+            $_get = $this->request->get ?? [];
+            $_post = $this->request->post ?? [];
 
-        $request = array_merge($_get,$_post);
-
-        if (!$key) {
-            return $request;
+            $this->input = array_merge($_get,$_post);
         }
-
-        return isset($request[$key]) ? $request[$key] : $default;
     }
 
+    public function input(string $key='',$default=null)
+    {
+        $this->mergeGP();
+
+        if (!$key) {
+            return $this->input;
+        }
+
+        return isset($this->input[$key]) ? $this->input[$key] : $default;
+    }
+
+    //验证
+    public function validation(array $input)
+    {
+
+        $this->mergeGP();
+
+        $error = new class() {
+            private $_message = '';
+            public function setMessage($message)
+            {
+                $this->_message = $message;
+            }
+            public function getMessage()
+            {
+                return $this->_message;
+            }
+        };
+
+        $_validation = function($key,$rule) use($error) :bool {
+
+            $ops = explode(',',$rule);
+
+            foreach($ops as $op) {
+                //指令,参数
+                list($order,$factor) = explode(':',$op);
+
+                if ($order == 'require') {
+                    //必须
+                    if (!isset($this->input[$key])) {
+                        $error->setMessage([
+                            $key,$rule
+                        ]);
+                        return false;
+                    }
+                }else if ($order == 'int') {
+                    //判断是数字
+                    if (!isset($this->input[$key])) {
+                        $error->setMessage([
+                            $key,$rule
+                        ]);
+                        return false;
+                    }
+
+                    if (!is_numeric($this->input[$key])) {
+                        $error->setMessage([
+                            $key,$rule
+                        ]);
+                        return false;
+                    }
+
+                }else if($order == 'gt') {
+                    //长度要求
+                    if (!isset($this->input[$key])) {
+                        $error->setMessage([
+                            $key,$rule
+                        ]);
+                        return false;
+                    }
+
+                    if (is_numeric($this->input[$key])) {
+                        if (intval($this->input[$key]) <= $factor) {
+                            $error->setMessage([
+                                $key,$rule
+                            ]);
+                            return false;
+                        }
+                    }else {
+                        if (mb_strlen($this->input[$key]) <= $factor) {
+                            $error->setMessage([
+                                $key,$rule
+                            ]);
+                            return false;
+                        }
+                    }
+
+                }else if ($order == 'lt') {
+                    //字数要求
+                    if (!isset($this->input[$key])) {
+                        $error->setMessage([
+                            $key,$rule
+                        ]);
+                        return false;
+                    }
+
+                    if (is_numeric($this->input[$key])) {
+                        if (intval($this->input[$key]) > $factor) {
+                            $error->setMessage([
+                                $key,$rule
+                            ]);
+                            return false;
+                        }
+                    }else {
+                        if (mb_strlen($this->input[$key]) > $factor) {
+                            $error->setMessage([
+                                $key,$rule
+                            ]);
+                            return false;
+                        }
+                    }
+
+                }else if ($order{0} == '#' && $order{strlen($order)-1} == "#") {
+
+                    //正则表达式
+                    if (!isset($this->input[$key])) {
+                        $error->setMessage([
+                            $key,$rule
+                        ]);
+                        return false;
+                    }
+
+                    if (!preg_match($order,$this->input[$key])) {
+                        $error->setMessage([
+                            $key,$rule
+                        ]);
+                        return false;
+                    }
+
+                }else if($order == 'email') {
+                    //邮箱
+                    if (!isset($this->input[$key])) {
+                        $error->setMessage([
+                            $key,$rule
+                        ]);
+                        return false;
+                    }
+
+                    if (!preg_match("/^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,})$/",$this->input[$key])) {
+                        $error->setMessage([
+                            $key,$rule
+                        ]);
+                        return false;
+                    }
+
+                }else if ($order == 'default') {
+                    //默认值
+                    if (!isset($this->input[$key])) {
+                        $this->input[$key] = $factor;
+                    }
+                }else {
+                    //默认值
+                    if (!isset($this->input[$key])) {
+                        $this->input[$key] = $order;
+                    }
+                }
+            }
+
+            return true;
+        };
+
+        foreach($input as $key => $rule) {
+            if (!$_validation->call($this,$key,$rule)) {
+                return $error;
+            }
+        }
+
+        return null;
+    }
+
+    //$_SERVER
     public function server(string $key='')
     {
         return $key ? $this->request->server[$key] : $this->request->server;
+    }
+
+    //获取头信息
+    public function header(string $key = '')
+    {
+        return $key ? $this->request->header[$key] : $this->request->header;
     }
 
     //设置中间值
@@ -1250,6 +1477,7 @@ class Request
         $this->container[$key] = $val;
     }
 
+    //获取中间值
     public function get($key)
     {
         return $this->container[$key];
@@ -1286,8 +1514,8 @@ class Response
     private function getTraceAsString($file,$line,$message)
     {
         $_message = <<<EOD
-            #1 : $file : $line
-            #2 : $message
+#1 : $file : $line
+#2 : $message
 EOD;
         return $_message;
 
@@ -1317,9 +1545,15 @@ EOD;
     }
 
     //中断
-    public function abort(string $msg = '')
+    public function abort(array $val)
     {
-        $this->end($msg);
+        $this->end($val);
+        throw new WorkerException();
+    }
+
+    public function debug($val)
+    {
+        $this->end(var_export($val,true));
         throw new WorkerException();
     }
 
@@ -1346,7 +1580,6 @@ EOD;
             $this->write(200,json_encode($content));
 
         }elseif (is_string($content)) {
-
             $this->write(200,$content);
 
         }elseif($content instanceof WorkerException) {
@@ -1371,12 +1604,25 @@ EOD;
 
         }elseif($content instanceof \Exception ){
 
-            $this->write(500,$content->getTraceAsString());
+            $message = "\n";
+            $message .= $content->getMessage() ."  ";
+            $message .= $content->getFile() . "  ";
+            $message .= $content->getLine() . "\n\n";
+            $message .= $content->getTraceAsString();
+
+            $this->write(500,$message);
 
         }elseif($content instanceof \Error) {
 
             $this->write(500,$this->getTraceAsString($content->getFile(),$content->getLine(),$content->getMessage()));
 
+        }elseif (is_object($content)) {
+
+            $struct = var_export($content,true);
+            $this->write(200,$struct);
+
+        }else {
+            $this->write(200,$content);
         }
     }
 }
@@ -1393,9 +1639,10 @@ class BaseController
     }
 }
 
+
 class BaseModel
 {
-    protected $db = null;
+    private $db = null;
 
     public function __construct()
     {
@@ -1439,9 +1686,6 @@ class Consoles
     private $_redisPool = null;
     private function redisPool()
     {
-
-        //Setting::get('server')
-
         $pool = new ConnectionPool(
             Setting::get('pool')
             ,
@@ -1538,4 +1782,11 @@ class Consoles
             print $e;
         }
     }
+}
+
+//项目运行的所有信息
+class Runtime
+{
+    //项目根路径
+    public static $ROOT_PATH = '';
 }
