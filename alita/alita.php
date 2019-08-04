@@ -5,12 +5,12 @@ $app = new Alita\App([
     'project_root' => __DIR__
 ]);
 
-$app->startInitialize(function () {
+$app->initialize(function () {
     date_default_timezone_set("Asia/Shanghai");
 });
 
 //运行模式
 $app->prod(false);
 
-$app->Run();
+$app->run();
 
