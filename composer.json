@@ -1,0 +1,31 @@
+{
+    "name": "nixuehan/alita",
+    "type": "library",
+    "description": "Micro framework for php in swoole",
+    "keywords": [
+      "swoole",
+      "connection-pool",
+      "database-connection-pool"
+    ],
+    "authors": [
+      {
+        "name": "妖",
+        "email": "237852571@qq.com"
+      }
+    ],
+    "license": "Apache-2.0",
+    "require": {
+        "open-smf/connection-pool": "~1.0"
+    },
+    "autoload": {
+      "psr-4": {
+        "Alita\\": "src"
+      }
+    },
+    "autoload-dev": {
+      "psr-4": {
+        "Tests\\": "tests/"
+      }
+    },
+    "prefer-stable": true
+}
