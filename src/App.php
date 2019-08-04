@@ -380,9 +380,29 @@ class ORM
 
 class Log
 {
+
+    private function getTraceAsString($file,$line,$message)
+    {
+        $_message = <<<EOD
+#1 : $file : $line
+#2 : $message
+EOD;
+        return $_message;
+
+    }
+
     public static function print(array $message)
     {
         $message = implode('    ',$message);
+
+        go(function () use($message){
+            fwrite(STDOUT,$message ."\n");
+        });
+    }
+
+    public static function error(\Throwable $t)
+    {
+        $message = self::getTraceAsString($t->getFile(),$t->getLine(),$t->getMessage());
 
         go(function () use($message){
             fwrite(STDOUT,$message ."\n");
@@ -597,7 +617,7 @@ class RuntimeException extends \Exception
 //事件
 class Events
 {
-    use getInstance;
+    use GetInstance;
 
     private $_events = []; //所有事件
 
@@ -709,7 +729,6 @@ class Setting
         if (file_exists(self::$ROOT_DIR . '/.env.php')) {
             $setting = require self::$ROOT_DIR . '/.env.php';
 
-
             if(!isset($setting['server'])) {
                 print("server config not found\n");
                 exit;
@@ -780,7 +799,7 @@ class App
 
     private $_providers = [];
 
-    private $_service = []; //请求过程里的全局对象
+    private $_singleton = []; //请求过程里的全局对象
     private $_middleware = []; //中间件处理
 
     //启动初始化
@@ -800,7 +819,7 @@ class App
 
     }
 
-    public function startInitialize(\Closure $fn)
+    public function initialize(\Closure $fn)
     {
         $this->_startInitialize = $fn;
     }
@@ -891,9 +910,9 @@ class App
         return isset($this->_providers[$providerName]) ? $this->_providers[$providerName] : false;
     }
 
-    public function Service(array $obj)
+    public function singleton(array $obj)
     {
-        $this->_service = $obj;
+        $this->_singleton = $obj;
     }
 
     private $_events = [];
@@ -903,11 +922,11 @@ class App
     {
         $this->_events = $fn();
 
-        $service = Service::instance();
+        $singleton = Singleton::instance();
         $events = Events::instance();
         $events->setEvents($this->_events);
 
-        $service->set('Events',$events);
+        $singleton->set('Events',$events);
     }
 
     public function middleware(array $middleware)
@@ -1009,7 +1028,7 @@ class App
         ]);
 
 
-        $service = Service::instance();
+        $singleton = Singleton::instance();
 
         //初始化
         if ($this->_startInitialize) {
@@ -1018,13 +1037,13 @@ class App
 
         //配置类
         $config = new Config();
-        $service->set('Config',$config);
+        $singleton->set('Config',$config);
         //加载默认APP配置
         $config->load(Setting::$ROOT_DIR . "/Application/Config/App.".$this->getMode().".php");
 
         //注册全局对象
-        foreach($this->_service as $k => $v) {
-            $service->set($k,$v());
+        foreach($this->_singleton as $k => $v) {
+            $singleton->set($k,$v);
         }
 
         if (is_callable($this->_mysqlConfig_fn)) {
@@ -1121,7 +1140,7 @@ class App
     {
         $_dispatch = function(\Alita\Request $request,\Alita\Response $response)
         {
-            $service = Service::instance();
+            $signleton = Singleton::instance();
 
             //默认走目录寻址
             $Router = $this->getProvider(RulesRoute::class);
@@ -1137,14 +1156,14 @@ class App
                 if (Setting::$app_mysql) {
                     $mysqlConn = $this->getConnPool('mysql');
                     $mysql = $mysqlConn->borrow();
-                    $service->set('mysql', $mysql);
-                    $service->set('orm', new ORM());
+                    $signleton->set('mysql', $mysql);
+                    $signleton->set('orm', new ORM());
                 }
 
                 if (Setting::$app_redis) {
                     $redisConn = $this->getConnPool('redis');
                     $redis = $redisConn->borrow();
-                    $service->set('redis', $redis);
+                    $signleton->set('redis', $redis);
                 }
 
                 if (!empty($this->_before_fn)) { ($this->_before_fn)($request,$response); }
@@ -1246,15 +1265,15 @@ class App
             $_startTime = microtime(true);
 
 
-            $service = Service::instance();
+            $singleton = Singleton::instance();
 
             $_request = new Request($request);
             $_response = new Response($response,$request);
 
             $_response->startTime =  $_startTime;
 
-            $service->set('Request',$_request);
-            $service->set('Response',$_response);
+            $singleton->set('Request',$_request);
+            $singleton->set('Response',$_response);
 
             //注册全局中间件
             //中间件 兼容函数和对象
@@ -1288,7 +1307,7 @@ Alita Server {$version} Started :\e[0m
 SLOGAN;
     }
 
-    public function Run()
+    public function run()
     {
 
         if ($this->_consoles === null) {
@@ -1298,15 +1317,14 @@ SLOGAN;
 
         }else{
             go(function () {
-                $this->_consoles->Run();
+                $this->_consoles->run();
             });
         }
     }
 }
 
-//用户级对象
-//外部对象
-class Service
+//用户级单例容器
+class Singleton
 {
     private $o = [];
 
@@ -1324,6 +1342,10 @@ class Service
 
     public static function __callStatic($name, $arguments)
     {
+        //延迟绑定
+        if (is_callable(static::instance()->get($name))) {
+            return (static::instance()->get($name))();
+        }
         return (static::instance()->get($name));
     }
 }
@@ -1543,9 +1565,11 @@ class Request
     }
 }
 
-trait getInstance
+trait GetInstance
 {
     public static $_instance = null;
+
+    private function __construct() {}
 
     public static function instance()
     {
@@ -1554,6 +1578,8 @@ trait getInstance
         }
         return self::$_instance;
     }
+
+    private function __clone() {}
 }
 
 class Response
@@ -1693,8 +1719,8 @@ class BaseController
 
     public function __construct()
     {
-        $this->Request = Service::Request();
-        $this->Response = Service::Response();
+        $this->Request = Singleton::Request();
+        $this->Response = Singleton::Response();
     }
 }
 
@@ -1711,7 +1737,7 @@ class BaseModel
     protected function initialize()
     {
         if (Setting::$app_mysql) {
-            $this->db = Service::orm()->setConnect(Service::mysql());
+            $this->db = Singleton::orm()->setConnect(Singleton::mysql());
         }
     }
 
@@ -1756,10 +1782,10 @@ class Consoles
 
         $connection = $this->_redisPool->borrow();
 
-        $service = Service::instance();
+        $singleton = Singleton::instance();
 
         //模型需要
-        $service->set('redis', $connection);
+        $singleton->set('redis', $connection);
 
         defer(function () {
             $this->_redisPool->close();
@@ -1783,11 +1809,11 @@ class Consoles
 
         $connection = $this->_mysqlPool->borrow();
 
-        $service = Service::instance();
+        $singleton = Singleton::instance();
 
         //模型需要
-        $service->set('mysql', $connection);
-        $service->set('orm', new ORM());
+        $singleton->set('mysql', $connection);
+        $singleton->set('orm', new ORM());
 
         defer(function () {
             $this->_mysqlPool->close();
@@ -1837,19 +1863,19 @@ class Consoles
         $service->handle();
 
 
-        $service = Service::instance();
+        $singleton = Singleton::instance();
 
         if (Setting::$app_mysql) {
-            $this->_mysqlPool->return($service->get('mysql'));
+            $this->_mysqlPool->return($singleton->get('mysql'));
         }
 
         if (Setting::$app_redis) {
-            $this->_redisPool->return($service->get('redis'));
+            $this->_redisPool->return($singleton->get('redis'));
         }
 
     }
 
-    public function Run()
+    public function run()
     {
         //初始化连接池
         if (Setting::$app_mysql) {
@@ -1866,10 +1892,9 @@ class Consoles
                 case "service": $this->service($this->_do,$this->_params);
             }
         }
-        catch (\Throwable $e)
+        catch (\Throwable $t)
         {
-            //todo 完善输出
-            print $e;
+            Log::error($t);
         }
     }
 }
